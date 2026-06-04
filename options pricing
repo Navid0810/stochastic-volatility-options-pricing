@@ -1,0 +1,192 @@
+import numpy as np
+from scipy.stats import norm
+
+# ============================================================
+# Global parameters
+# ============================================================
+
+R = 0.05
+DT = 1 / 252
+T = 1.0
+N = int(T / DT)
+
+S0 = 100.0
+K_GRID = np.arange(70, 131, 10)
+
+RNG = np.random.default_rng(seed=42)
+
+MC_PATHS = 1000   # reduced for efficiency 
+
+
+# ============================================================
+# SV model parameters
+# ============================================================
+
+MU = R * DT
+RHO_SV = 0.98
+NU_SV = 0.05
+H0 = np.log(0.02)
+H_BAR = np.log(0.02)
+
+
+# ============================================================
+# Heston parameters
+# ============================================================
+
+V0 = 0.113
+THETA = 0.113
+KAPPA = 2.0
+XI = 0.3
+RHO_H = -0.7
+
+
+# ============================================================
+# SV simulation
+# ============================================================
+
+def simulate_sv_paths(M):
+    log_S = np.empty((M, N + 1))
+    h = np.empty((M, N + 1))
+
+    log_S[:, 0] = np.log(S0)
+    h[:, 0] = H0
+
+    for t in range(N):
+        z = RNG.standard_normal(M)
+        e = RNG.standard_normal(M)
+
+        log_S[:, t + 1] = (
+            log_S[:, t]
+            + MU
+            + np.exp(h[:, t]) * z
+        )
+
+        h[:, t + 1] = (
+            (1 - RHO_SV) * H_BAR
+            + RHO_SV * h[:, t]
+            + NU_SV * e
+        )
+
+    return np.exp(log_S)
+
+
+# ============================================================
+# Heston simulation
+# ============================================================
+
+def simulate_heston_paths(M):
+    S = np.empty((M, N + 1))
+    v = np.empty((M, N + 1))
+
+    S[:, 0] = S0
+    v[:, 0] = V0
+
+    sqrt_dt = np.sqrt(DT)
+
+    for t in range(N):
+        z1 = RNG.standard_normal(M)
+        z2 = RNG.standard_normal(M)
+
+        eps = RHO_H * z1 + np.sqrt(1 - RHO_H**2) * z2
+
+        vt = np.maximum(v[:, t], 0)
+
+        v[:, t + 1] = (
+            v[:, t]
+            + KAPPA * (THETA - v[:, t]) * DT
+            + XI * np.sqrt(vt) * sqrt_dt * z1
+        )
+
+        v[:, t + 1] = np.maximum(v[:, t + 1], 0)
+
+        S[:, t + 1] = S[:, t] * np.exp(
+            (R - 0.5 * vt) * DT
+            + np.sqrt(vt) * sqrt_dt * eps
+        )
+
+    return S
+
+
+# ============================================================
+# Payoff + MC helpers
+# ============================================================
+
+def payoff_call(ST, K):
+    return np.maximum(ST - K, 0)
+
+
+def mc_price(values):
+    return values.mean(), values.std(ddof=1) / np.sqrt(len(values))
+
+
+# ============================================================
+# Black-Scholes
+# ============================================================
+
+def bs_price(S, K, r, T, sigma):
+    volT = sigma * np.sqrt(T)
+    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / volT
+    d2 = d1 - volT
+
+    return S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+
+
+def bs_delta(S, K, r, T, sigma):
+    volT = sigma * np.sqrt(T)
+    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / volT
+    return norm.cdf(d1)
+
+
+def estimate_vol(paths):
+    log_ret = np.diff(np.log(paths), axis=1)
+    return np.std(log_ret) * np.sqrt(252)
+
+
+# ============================================================
+# Efficient delta hedging (vector-reduced structure)
+# ============================================================
+
+def delta_hedge_pnl(paths, K, sigma):
+    M = paths.shape[0]
+    pnls = np.empty(M)
+
+    discount = np.exp(R * DT)
+
+    for i in range(M):
+
+        S = paths[i]
+
+        # initial option price
+        tau = T
+        cash = bs_price(S[0], K, R, tau, sigma)
+
+        delta_prev = bs_delta(S[0], K, R, tau, sigma)
+        stock_pos = delta_prev
+        cash -= delta_prev * S[0]
+
+        for t in range(1, N):
+
+            tau = T - t * DT
+
+            delta_new = bs_delta(S[t], K, R, tau, sigma)
+
+            cash *= discount
+            cash -= (delta_new - stock_pos) * S[t]
+
+            stock_pos = delta_new
+
+        payoff = max(S[-1] - K, 0)
+
+        portfolio = cash * discount + stock_pos * S[-1]
+
+        pnls[i] = portfolio - payoff
+
+    return pnls
+
+
+def pnl_stats(pnls):
+    return {
+        "mean": np.mean(pnls),
+        "std": np.std(pnls),
+        "5%_worst": np.percentile(pnls, 5)
+    }
