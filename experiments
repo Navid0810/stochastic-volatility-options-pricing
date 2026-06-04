@@ -1,0 +1,45 @@
+
+# ============================================================
+# Experiment
+# ============================================================
+
+sigma_bs = estimate_vol(simulate_sv_paths(MC_PATHS))
+
+sv_paths = simulate_sv_paths(MC_PATHS)
+heston_paths = simulate_heston_paths(MC_PATHS)
+
+sv_pnls = delta_hedge_pnl(sv_paths, 100, sigma_bs)
+heston_pnls = delta_hedge_pnl(heston_paths, 100, sigma_bs)
+
+print("\nDELTA HEDGING RESULTS")
+print("-" * 40)
+print("SV:", pnl_stats(sv_pnls))
+print("Heston:", pnl_stats(heston_pnls))
+
+
+# ============================================================
+# Strike comparison (pricing surface)
+# ============================================================
+
+bs_prices = []
+sv_prices = []
+heston_prices = []
+
+for K in K_GRID:
+    bs_prices.append(bs_price(S0, K, R, T, sigma_bs))
+    sv_prices.append(mc_price(payoff_call(sv_paths[:, -1], K))[0])
+    heston_prices.append(mc_price(payoff_call(heston_paths[:, -1], K))[0])
+
+
+print("\nSTRIKE SURFACE")
+print("-" * 40)
+
+for k, bs, sv, hv in zip(K_GRID, bs_prices, sv_prices, heston_prices):
+    print(f"K={k:3d} | BS={bs:6.3f} | SV={sv:6.3f} | H={hv:6.3f}")
+
+
+print("\nATM CHECK")
+print("-" * 40)
+print(f"BS ATM:     {bs_prices[3]:.4f}")
+print(f"SV ATM:     {sv_prices[3]:.4f}")
+print(f"Heston ATM: {heston_prices[3]:.4f}")
